@@ -1,12 +1,15 @@
 diff --git a/torch/_inductor/codecache.py b/torch/_inductor/codecache.py
-index d481cd5ce99..449d5793005 100644
+index d481cd5ce99..c11ad67be21 100644
 --- a/torch/_inductor/codecache.py
 +++ b/torch/_inductor/codecache.py
-@@ -4946,6 +4946,13 @@ class PyCodeCache:
+@@ -4946,6 +4946,16 @@ class PyCodeCache:
  
      @classmethod
      def write(cls, source_code: str, extra: str = "") -> tuple[str, str]:
-+        from torch._inductor.runtime.sqlite_cache import local_cache, sqlite_cache_enabled
++        from torch._inductor.runtime.sqlite_cache import (
++            local_cache,
++            sqlite_cache_enabled,
++        )
 +
 +        if sqlite_cache_enabled():
 +            key = get_hash(source_code.strip(), extra)
@@ -16,7 +19,7 @@ index d481cd5ce99..449d5793005 100644
          return write(source_code, "py", extra=extra)
  
      @classmethod
-@@ -4956,7 +4963,7 @@ class PyCodeCache:
+@@ -4956,7 +4966,7 @@ class PyCodeCache:
          *,
          set_sys_modules: bool | None = None,
      ) -> ModuleType:
@@ -25,11 +28,14 @@ index d481cd5ce99..449d5793005 100644
          return cls.load_by_key_path(key, path, set_sys_modules=set_sys_modules)
  
      @classmethod
-@@ -4969,6 +4976,11 @@ class PyCodeCache:
+@@ -4969,6 +4979,14 @@ class PyCodeCache:
          *,
          set_sys_modules: bool | None = None,
      ) -> ModuleType:
-+        from torch._inductor.runtime.sqlite_cache import local_cache, sqlite_cache_enabled
++        from torch._inductor.runtime.sqlite_cache import (
++            local_cache,
++            sqlite_cache_enabled,
++        )
 +
 +        if sqlite_cache_enabled():
 +            # A worker or deserialized graph may hold a previous process's path.
@@ -37,7 +43,7 @@ index d481cd5ce99..449d5793005 100644
          if linemap is None:
              linemap = []
  
-@@ -5007,7 +5019,14 @@ class PyCodeCache:
+@@ -5007,7 +5025,14 @@ class PyCodeCache:
          corresponding on-disk source files.
          """
          if purge:
@@ -53,19 +59,25 @@ index d481cd5ce99..449d5793005 100644
                      if not mod.__file__:
                          raise AssertionError(f"Module {mod} has no __file__ attribute")
 diff --git a/torch/_inductor/output_code.py b/torch/_inductor/output_code.py
-index 5afbd22ad18..3c9d05bce64 100644
+index 5afbd22ad18..14401b2c569 100644
 --- a/torch/_inductor/output_code.py
 +++ b/torch/_inductor/output_code.py
-@@ -1018,6 +1018,14 @@ class CompiledFxGraph(OutputCode):
+@@ -1018,6 +1018,20 @@ class CompiledFxGraph(OutputCode):
      def write_to_disk(self) -> str:
          from torch._dynamo.utils import counters
          from torch._inductor.codecache import get_path, write_atomic
-+        from torch._inductor.runtime.sqlite_cache import local_cache, sqlite_cache_enabled
++        from torch._inductor.runtime.sqlite_cache import (
++            local_cache,
++            sqlite_cache_enabled,
++        )
 +
 +        if sqlite_cache_enabled():
 +            cache = local_cache()
 +            cache.put(
-+                "python", self.cache_key, self.source_code.encode("utf-8"), overwrite=False
++                "python",
++                self.cache_key,
++                self.source_code.encode("utf-8"),
++                overwrite=False,
 +            )
 +            return cache.materialize_python(self.cache_key)
  
@@ -138,3 +150,4 @@ index 9a0933c2dd6..86aa5d88412 100644
 +        autotune_cache = create_local_cache_backend()
          key = os.path.join(cache_dir(), self.key)
          autotune_cache._put(key, self.content)
+ 

@@ -1,4 +1,4 @@
-"""Automatic, opt-in import integration for the temporary SQLite cache patch."""
+"""Automatic import integration for the temporary SQLite cache patch."""
 
 import os
 
