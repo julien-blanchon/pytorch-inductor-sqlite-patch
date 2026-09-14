@@ -1,0 +1,140 @@
+diff --git a/torch/_inductor/codecache.py b/torch/_inductor/codecache.py
+index d481cd5ce99..449d5793005 100644
+--- a/torch/_inductor/codecache.py
++++ b/torch/_inductor/codecache.py
+@@ -4946,6 +4946,13 @@ class PyCodeCache:
+ 
+     @classmethod
+     def write(cls, source_code: str, extra: str = "") -> tuple[str, str]:
++        from torch._inductor.runtime.sqlite_cache import local_cache, sqlite_cache_enabled
++
++        if sqlite_cache_enabled():
++            key = get_hash(source_code.strip(), extra)
++            cache = local_cache()
++            cache.put("python", key, source_code.encode("utf-8"), overwrite=False)
++            return key, cache.materialize_python(key)
+         return write(source_code, "py", extra=extra)
+ 
+     @classmethod
+@@ -4956,7 +4963,7 @@ class PyCodeCache:
+         *,
+         set_sys_modules: bool | None = None,
+     ) -> ModuleType:
+-        key, path = write(source_code, "py", extra=extra)
++        key, path = cls.write(source_code, extra=extra)
+         return cls.load_by_key_path(key, path, set_sys_modules=set_sys_modules)
+ 
+     @classmethod
+@@ -4969,6 +4976,11 @@ class PyCodeCache:
+         *,
+         set_sys_modules: bool | None = None,
+     ) -> ModuleType:
++        from torch._inductor.runtime.sqlite_cache import local_cache, sqlite_cache_enabled
++
++        if sqlite_cache_enabled():
++            # A worker or deserialized graph may hold a previous process's path.
++            path = local_cache().materialize_python(key)
+         if linemap is None:
+             linemap = []
+ 
+@@ -5007,7 +5019,14 @@ class PyCodeCache:
+         corresponding on-disk source files.
+         """
+         if purge:
++            from torch._inductor.runtime.sqlite_cache import (
++                local_cache,
++                sqlite_cache_enabled,
++            )
++
+             for mod in cls.modules:
++                if sqlite_cache_enabled():
++                    local_cache().delete("python", getattr(mod, "key"))
+                 try:
+                     if not mod.__file__:
+                         raise AssertionError(f"Module {mod} has no __file__ attribute")
+diff --git a/torch/_inductor/output_code.py b/torch/_inductor/output_code.py
+index 5afbd22ad18..3c9d05bce64 100644
+--- a/torch/_inductor/output_code.py
++++ b/torch/_inductor/output_code.py
+@@ -1018,6 +1018,14 @@ class CompiledFxGraph(OutputCode):
+     def write_to_disk(self) -> str:
+         from torch._dynamo.utils import counters
+         from torch._inductor.codecache import get_path, write_atomic
++        from torch._inductor.runtime.sqlite_cache import local_cache, sqlite_cache_enabled
++
++        if sqlite_cache_enabled():
++            cache = local_cache()
++            cache.put(
++                "python", self.cache_key, self.source_code.encode("utf-8"), overwrite=False
++            )
++            return cache.materialize_python(self.cache_key)
+ 
+         # See _save_graph(); we don't store the callable in the cache entry so
+         # recreate it here from the PyCodeCache disk cache.
+diff --git a/torch/_inductor/remote_cache.py b/torch/_inductor/remote_cache.py
+index 1709eeefdb3..88af11e75c6 100644
+--- a/torch/_inductor/remote_cache.py
++++ b/torch/_inductor/remote_cache.py
+@@ -131,6 +131,30 @@ class RemoteCachePassthroughSerde(RemoteCacheSerde[_T, _T]):
+         return data
+ 
+ 
++def create_local_cache_backend() -> RemoteCacheBackend[bytes]:
++    from .runtime.sqlite_cache import sqlite_cache_enabled
++
++    if sqlite_cache_enabled():
++        return SQLiteLocalCacheBackend()
++    return LocalCacheBackend()
++
++
++class SQLiteLocalCacheBackend(RemoteCacheBackend[bytes]):
++    @override
++    def _get(self, key: str) -> bytes | None:
++        from .runtime.sqlite_cache import local_cache
++
++        cache = local_cache()
++        return cache.get("autotune", cache.autotune_key(key))
++
++    @override
++    def _put(self, key: str, data: bytes) -> None:
++        from .runtime.sqlite_cache import local_cache
++
++        cache = local_cache()
++        cache.put("autotune", cache.autotune_key(key), data)
++
++
+ class LocalCacheBackend(RemoteCacheBackend[bytes]):
+     """
+     A local filesystem implementation of the cache backend interface.
+@@ -359,7 +383,7 @@ class LocalCache(RemoteCache[JsonDataTy]):
+         # Local caches use the per-operation key as the filesystem path. Accept
+         # cache_id so they can be constructed through create_cache like remote
+         # caches.
+-        backend = LocalCacheBackend()
++        backend = create_local_cache_backend()
+         serde = RemoteCacheJsonSerde()
+         super().__init__(backend, serde)
+ 
+diff --git a/torch/_inductor/runtime/autotune_cache.py b/torch/_inductor/runtime/autotune_cache.py
+index 9a0933c2dd6..86aa5d88412 100644
+--- a/torch/_inductor/runtime/autotune_cache.py
++++ b/torch/_inductor/runtime/autotune_cache.py
+@@ -47,9 +47,9 @@ from torch.utils._triton import has_triton
+ from ..cache_key import AUTOTUNE_CACHE_KEY_STRATEGY
+ from ..remote_cache import (
+     create_cache,
++    create_local_cache_backend,
+     JsonDataTy,
+     LocalAutotuneCache,
+-    LocalCacheBackend,
+     RemoteCache,
+     RemoteCacheJsonSerde,
+ )
+@@ -95,7 +95,7 @@ def inductor_meta_from_config() -> _InductorMetaTy:
+ class AutotuneCacheArtifact(CacheArtifact):
+     @override
+     def populate_cache(self) -> None:
+-        autotune_cache = LocalCacheBackend()
++        autotune_cache = create_local_cache_backend()
+         key = os.path.join(cache_dir(), self.key)
+         autotune_cache._put(key, self.content)
